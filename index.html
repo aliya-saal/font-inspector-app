@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Accurate PDF Text Highlighter</title>
+    <style>
+        body {
+          font-family: sans-serif;
+          margin: 0;
+          padding: 0;
+          display: flex;
+          height: 100vh;
+        }
+
+        #sidebar {
+          width: 300px;
+          padding: 20px;
+          border-left: 1px solid #ccc;
+          background: #f9f9f9;
+          overflow-y: auto;
+        }
+
+        #main {
+          flex: 1;
+          padding: 20px;
+        }
+
+        canvas {
+          border: 1px solid #ccc;
+          display: block;
+        }
+
+        #pdf-container {
+          position: relative;
+          display: inline-block;
+        }
+
+        #overlay {
+          position: absolute;
+          top: 0;
+          left: 0;
+          pointer-events: none;
+        }
+
+        .highlight {
+          position: absolute;
+          background: rgba(255, 0, 0, 0.2);
+          border: 1px solid red;
+          pointer-events: all;
+          cursor: pointer;
+        }
+
+        .highlight.selected {
+          border-color: blue;
+          background: rgba(0, 0, 255, 0.2);
+        }
+
+        #info strong {
+          display: block;
+          margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+<div id="main">
+    <h2>PDF Text Inspector</h2>
+    <input type="file" id="pdf-upload" accept="application/pdf" />
+    <div id="pdf-container">
+        <canvas id="pdf-canvas"></canvas>
+        <div id="overlay"></div>
+    </div>
+</div>
+
+<div id="sidebar">
+    <h3>Selected Text Info</h3>
+    <div id="info">Click any highlighted text for details.</div>
+</div>
+
+<!-- PDF.js -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+
+<script>
+    const canvas = document.getElementById('pdf-canvas');
+    const ctx = canvas.getContext('2d');
+    const overlay = document.getElementById('overlay');
+    const info = document.getElementById('info');
+    let allBoxes = [];
+
+    document.getElementById('pdf-upload').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const page = await pdf.getPage(1);
+
+      const scale = 1.5;
+      const viewport = page.getViewport({ scale });
+
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+
+      overlay.innerHTML = '';
+      overlay.style.width = `${canvas.width}px`;
+      overlay.style.height = `${canvas.height}px`;
+
+      allBoxes = [];
+
+      await page.render({ canvasContext: ctx, viewport }).promise;
+
+      const textContent = await page.getTextContent({ normalizeWhitespace: true });
+
+      textContent.items.forEach((item) => {
+        const text = item.str.trim();
+        if (!text) return;
+
+        const transform = pdfjsLib.Util.transform(viewport.transform, item.transform);
+        const [a, b, c, d, e, f] = transform;
+
+        const width = item.width * scale;
+        const height = Math.sqrt(b * b + d * d); // font height
+        const left = e;
+        const top = f - height;
+
+        const fontSize = Math.round(height);
+        const highlight = document.createElement('div');
+        highlight.className = 'highlight';
+        highlight.style.left = `${Math.round(left)}px`;
+        highlight.style.top = `${Math.round(top)}px`;
+        highlight.style.width = `${Math.round(width)}px`;
+        highlight.style.height = `${Math.round(height)}px`;
+
+        const boxData = {
+          text,
+          font: item.fontName || 'Unknown',
+          x: Math.round(left),
+          y: Math.round(top),
+          width: Math.round(width),
+          height: Math.round(height),
+          fontSize,
+          element: highlight
+        };
+
+        highlight.addEventListener('click', () => {
+          allBoxes.forEach(b => b.element.classList.remove('selected'));
+          const matches = allBoxes.filter(b => b.text === text);
+          matches.forEach(b => b.element.classList.add('selected'));
+
+          info.innerHTML = `
+            <strong>Matched Text:</strong>
+            <div style="font-size:${fontSize}px; border:1px solid #ccc; padding:4px; margin-top:5px;">${text}</div>
+            <strong>Font Size:</strong> ${fontSize}px<br/>
+            <strong>Font Family:</strong> ${boxData.font}<br/>
+            <strong>Occurrences:</strong> ${matches.length}<br/>
+            <strong>Position:</strong> x: ${boxData.x}px, y: ${boxData.y}px<br/>
+            <strong>Dimensions:</strong> ${boxData.width}px × ${boxData.height}px
+          `;
+        });
+
+        overlay.appendChild(highlight);
+        allBoxes.push(boxData);
+      });
+    });
+</script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+# Node.js dependencies
+node_modules/
+
+# Electron build output
+dist/
+
+# Optional: ignore logs, temporary files
+*.log
+*.tmp
+
+# macOS system files
+.DS_Store
+
+# VSCode settings (optional)
+.vscode/
+
+# OS or Editor-specific temp files
+*.swp
+*.swo
+*~
+
+# Environment variables (if any)
+.env
