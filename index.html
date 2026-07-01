@@ -274,6 +274,13 @@
       const words = buildWords(textContent.items, viewport, scale);
       assignSentences(words);
 
+      // Cache the internal-id -> real-family lookup for this page's render.
+      const familyCache = new Map();
+      const familyOf = (id) => {
+        if (!familyCache.has(id)) familyCache.set(id, resolveFontFamily(page, id));
+        return familyCache.get(id);
+      };
+
       words.forEach((w) => {
         const text = w.text.trim();
         if (!text) return;
@@ -283,7 +290,10 @@
         const width = w.right - w.left;
         const height = w.bottom - w.top;
 
-        const fontSize = Math.round(w.maxHeight);
+        // Reported size = true point size (scale-independent). The rendered
+        // px size is kept only to preview the word at its on-screen height.
+        const fontSizePt = Math.round(w.maxFontSizePt * 10) / 10;
+        const fontSizePx = Math.round(w.maxHeight);
         const highlight = document.createElement('div');
         highlight.className = 'highlight';
         highlight.style.left = `${Math.round(left)}px`;
@@ -293,12 +303,13 @@
 
         const boxData = {
           text,
-          font: w.font || 'Unknown',
+          font: familyOf(w.font || 'Unknown'),
           x: Math.round(left),
           y: Math.round(top),
           width: Math.round(width),
           height: Math.round(height),
-          fontSize,
+          fontSizePt,
+          fontSizePx,
           sentence: w.sentence,
           element: highlight
         };
@@ -310,8 +321,8 @@
 
           info.innerHTML = `
             <strong>Matched Word:</strong>
-            <div dir="auto" style="font-size:${fontSize}px; border:1px solid #ccc; padding:4px; margin-top:5px;">${text}</div>
-            <strong>Font Size:</strong> ${fontSize}px<br/>
+            <div dir="auto" style="font-size:${fontSizePx}px; border:1px solid #ccc; padding:4px; margin-top:5px;">${text}</div>
+            <strong>Font Size:</strong> ${fontSizePt} pt <span style="color:#888">(${fontSizePx}px rendered)</span><br/>
             <strong>Font Family:</strong> ${boxData.font}<br/>
             <strong>Occurrences:</strong> ${matches.length}<br/>
             <strong>Position:</strong> x: ${boxData.x}px, y: ${boxData.y}px<br/>
@@ -355,9 +366,14 @@
         const width = item.width * scale;
         const left = e;
         const top = f - height;
+        // True font size in points, from the RAW (unscaled) text matrix:
+        // the vertical text scale = hypot(c, d) of item.transform. This is in
+        // PDF user-space units (1 unit = 1/72 in = 1 pt) and is independent of
+        // the render scale, unlike the device-pixel `height` above.
+        const fontSizePt = Math.hypot(item.transform[2], item.transform[3]);
         glyphs.push({
           text: raw,
-          left, top, width, height,
+          left, top, width, height, fontSizePt,
           right: left + width,
           bottom: top + height,
           baseline: f,
@@ -386,7 +402,8 @@
           cur = {
             text: g.text,
             left: g.left, right: g.right, top: g.top, bottom: g.bottom,
-            baseline: g.baseline, font: g.font, maxHeight: g.height
+            baseline: g.baseline, font: g.font,
+            maxHeight: g.height, maxFontSizePt: g.fontSizePt
           };
           words.push(cur);
         } else {
@@ -396,6 +413,7 @@
           cur.top = Math.min(cur.top, g.top);
           cur.bottom = Math.max(cur.bottom, g.bottom);
           cur.maxHeight = Math.max(cur.maxHeight, g.height);
+          cur.maxFontSizePt = Math.max(cur.maxFontSizePt, g.fontSizePt);
         }
         cur.endedBySpace = g.spaceAfter;
       }
@@ -419,6 +437,25 @@
         if (/\.\s*$/.test(w.text)) flush();
       }
       if (buffer.length) flush();
+    }
+    // -----------------------------------------------------------------------
+
+    // ---- Font family resolution -------------------------------------------
+    // PDF.js labels each text item with an internal font id (its "loadedName",
+    // e.g. "g_d0_f1"). The real embedded font name lives on the font object in
+    // page.commonObjs (its ".name", e.g. "ABCDEE+Arial-BoldMT"). We look it up
+    // and strip the 6-letter subset prefix ("ABCDEE+") for readability. If the
+    // font object isn't available, we fall back to the internal id.
+    function resolveFontFamily(page, fontId) {
+      try {
+        const font = page.commonObjs.get(fontId);
+        if (font && font.name) {
+          return font.name.replace(/^[A-Z]{6}\+/, '');
+        }
+      } catch (_) {
+        // Font not resolved yet, or id isn't a font key — fall back below.
+      }
+      return fontId;
     }
     // -----------------------------------------------------------------------
 
