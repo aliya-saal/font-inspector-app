@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Offline build binaries (downloaded manually; do not commit large binaries)
+offline-deps/**/*.zip
+offline-deps/**/*.7z
+
+# Editor / OS
+.idea/
+.DS_Store
+*.log
+
+# Local test artifacts
+test-multipage.pdf
+test-arabic.pdf

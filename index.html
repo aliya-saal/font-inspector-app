@@ -14,6 +14,9 @@
 
         #sidebar {
           width: 300px;
+          flex-shrink: 0;
+          height: 100vh;
+          box-sizing: border-box;
           padding: 20px;
           border-left: 1px solid #ccc;
           background: #f9f9f9;
@@ -22,7 +25,11 @@
 
         #main {
           flex: 1;
+          min-width: 0;
+          height: 100vh;
+          box-sizing: border-box;
           padding: 20px;
+          overflow: auto;
         }
 
         canvas {
@@ -59,12 +66,103 @@
           display: block;
           margin-top: 10px;
         }
+
+        #pdf-nav {
+          display: none;
+          align-items: center;
+          gap: 12px;
+          margin: 12px 0;
+        }
+
+        #pdf-nav button {
+          padding: 6px 14px;
+          font-size: 14px;
+          cursor: pointer;
+        }
+
+        #pdf-nav button:disabled {
+          cursor: not-allowed;
+          opacity: 0.5;
+        }
+
+        #page-indicator {
+          font-size: 14px;
+          min-width: 110px;
+          text-align: center;
+        }
+
+        #page-jump {
+          width: 50px;
+          padding: 4px;
+          font-size: 14px;
+        }
+
+        #align-controls {
+          display: none;
+          align-items: center;
+          gap: 12px;
+          margin: 0 0 12px;
+          font-size: 14px;
+        }
+
+        #align-tol {
+          width: 50px;
+          padding: 4px;
+          font-size: 14px;
+        }
+
+        /* Vertical guide lines marking detected alignment columns. */
+        .guide-line {
+          position: absolute;
+          top: 0;
+          width: 0;
+          pointer-events: none;
+        }
+        .guide-left  { border-left: 1px dashed #1565c0; }
+        .guide-right { border-left: 1px dashed #2e7d32; }
+
+        /* Per-box alignment status (applied only while guides are shown). */
+        .highlight.alg-aligned    { border-color: #2e7d32; background: rgba(46, 125, 50, 0.15); }
+        .highlight.alg-misaligned { border-color: #e65100; background: rgba(230, 81, 0, 0.30); }
+        .highlight.alg-neutral    { border-color: #9e9e9e; background: rgba(158, 158, 158, 0.12); }
+
+        #align-summary {
+          font-size: 13px;
+          line-height: 1.5;
+          margin-bottom: 12px;
+          padding-bottom: 12px;
+          border-bottom: 1px solid #ddd;
+        }
+        #align-summary .legend-swatch {
+          display: inline-block;
+          width: 11px;
+          height: 11px;
+          border-radius: 2px;
+          margin-right: 5px;
+          vertical-align: -1px;
+        }
     </style>
 </head>
 <body>
 <div id="main">
     <h2>PDF Text Inspector</h2>
     <input type="file" id="pdf-upload" accept="application/pdf" />
+    <div id="pdf-nav">
+        <button id="prev-page">&larr; Previous</button>
+        <span id="page-indicator">Page 1 of 1</span>
+        <button id="next-page">Next &rarr;</button>
+        <label>Go to: <input type="number" id="page-jump" min="1" value="1" /></label>
+        <label>Page size:
+            <select id="page-size">
+                <option value="a4">A4</option>
+                <option value="actual">Actual (PDF size)</option>
+            </select>
+        </label>
+    </div>
+    <div id="align-controls">
+        <label><input type="checkbox" id="align-toggle" /> Show alignment guides</label>
+        <label>Tolerance: <input type="number" id="align-tol" min="1" value="3" /> px</label>
+    </div>
     <div id="pdf-container">
         <canvas id="pdf-canvas"></canvas>
         <div id="overlay"></div>
@@ -72,6 +170,7 @@
 </div>
 
 <div id="sidebar">
+    <div id="align-summary"></div>
     <h3>Selected Text Info</h3>
     <div id="info">Click any highlighted text for details.</div>
 </div>
@@ -80,22 +179,80 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
 
 <script>
+    // Match the CDN version loaded above so the worker/cmaps line up.
+    const PDFJS_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/';
+    pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_BASE + 'pdf.worker.min.js';
+
     const canvas = document.getElementById('pdf-canvas');
     const ctx = canvas.getContext('2d');
     const overlay = document.getElementById('overlay');
     const info = document.getElementById('info');
+    const pdfNav = document.getElementById('pdf-nav');
+    const prevBtn = document.getElementById('prev-page');
+    const nextBtn = document.getElementById('next-page');
+    const pageIndicator = document.getElementById('page-indicator');
+    const pageJump = document.getElementById('page-jump');
+    const pageSizeSelect = document.getElementById('page-size');
+    const alignControls = document.getElementById('align-controls');
+    const alignToggle = document.getElementById('align-toggle');
+    const alignTol = document.getElementById('align-tol');
+    const alignSummary = document.getElementById('align-summary');
     let allBoxes = [];
+
+    let currentPdf = null;
+    let currentPage = 1;
+    let renderToken = 0;
 
     document.getElementById('pdf-upload').addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
 
       const arrayBuffer = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-      const page = await pdf.getPage(1);
+      currentPdf = await pdfjsLib.getDocument({
+        data: arrayBuffer,
+        // CMaps + standard fonts let PDF.js decode glyphs to correct Unicode
+        // for Arabic and other non-Latin / complex scripts.
+        cMapUrl: PDFJS_BASE + 'cmaps/',
+        cMapPacked: true,
+        standardFontDataUrl: PDFJS_BASE + 'standard_fonts/'
+      }).promise;
+      currentPage = 1;
 
-      const scale = 1.5;
+      pdfNav.style.display = 'flex';
+      alignControls.style.display = 'flex';
+      pageJump.max = currentPdf.numPages;
+      await renderPage(currentPage);
+    });
+
+    // Decide the render scale based on the chosen page-size mode.
+    //  - "a4": fit the page to exact A4 dimensions (orientation-aware),
+    //          preserving aspect ratio. An A4 source maps pixel-exact to A4.
+    //  - "actual": render at the PDF's own dimensions, at 96 dpi (CSS actual
+    //              size: 1 PDF point = 1/72 in shown at 96 px/in).
+    function computeScale(page) {
+      const base = page.getViewport({ scale: 1 });
+      if (pageSizeSelect.value === 'actual') {
+        return 96 / 72;
+      }
+      const A4_SHORT = 210 / 25.4 * 96; // ~793.7 px
+      const A4_LONG  = 297 / 25.4 * 96; // ~1122.5 px
+      const portrait = base.height >= base.width;
+      const targetW = portrait ? A4_SHORT : A4_LONG;
+      const targetH = portrait ? A4_LONG : A4_SHORT;
+      return Math.min(targetW / base.width, targetH / base.height);
+    }
+
+    async function renderPage(pageNumber) {
+      if (!currentPdf) return;
+      // Guard against overlapping renders when navigating quickly.
+      const token = ++renderToken;
+
+      const page = await currentPdf.getPage(pageNumber);
+
+      const scale = computeScale(page);
       const viewport = page.getViewport({ scale });
+
+      if (token !== renderToken) return;
 
       canvas.width = viewport.width;
       canvas.height = viewport.height;
@@ -105,24 +262,28 @@
       overlay.style.height = `${canvas.height}px`;
 
       allBoxes = [];
+      info.innerHTML = 'Click any highlighted text for details.';
 
       await page.render({ canvasContext: ctx, viewport }).promise;
 
       const textContent = await page.getTextContent({ normalizeWhitespace: true });
 
-      textContent.items.forEach((item) => {
-        const text = item.str.trim();
+      // PDF.js often emits each Arabic glyph as its own item, so we regroup:
+      // adjacent glyphs with no space between them become one WORD, and words
+      // are split into SENTENCES at periods.
+      const words = buildWords(textContent.items, viewport, scale);
+      assignSentences(words);
+
+      words.forEach((w) => {
+        const text = w.text.trim();
         if (!text) return;
 
-        const transform = pdfjsLib.Util.transform(viewport.transform, item.transform);
-        const [a, b, c, d, e, f] = transform;
+        const left = w.left;
+        const top = w.top;
+        const width = w.right - w.left;
+        const height = w.bottom - w.top;
 
-        const width = item.width * scale;
-        const height = Math.sqrt(b * b + d * d); // font height
-        const left = e;
-        const top = f - height;
-
-        const fontSize = Math.round(height);
+        const fontSize = Math.round(w.maxHeight);
         const highlight = document.createElement('div');
         highlight.className = 'highlight';
         highlight.style.left = `${Math.round(left)}px`;
@@ -132,12 +293,13 @@
 
         const boxData = {
           text,
-          font: item.fontName || 'Unknown',
+          font: w.font || 'Unknown',
           x: Math.round(left),
           y: Math.round(top),
           width: Math.round(width),
           height: Math.round(height),
           fontSize,
+          sentence: w.sentence,
           element: highlight
         };
 
@@ -147,19 +309,246 @@
           matches.forEach(b => b.element.classList.add('selected'));
 
           info.innerHTML = `
-            <strong>Matched Text:</strong>
-            <div style="font-size:${fontSize}px; border:1px solid #ccc; padding:4px; margin-top:5px;">${text}</div>
+            <strong>Matched Word:</strong>
+            <div dir="auto" style="font-size:${fontSize}px; border:1px solid #ccc; padding:4px; margin-top:5px;">${text}</div>
             <strong>Font Size:</strong> ${fontSize}px<br/>
             <strong>Font Family:</strong> ${boxData.font}<br/>
             <strong>Occurrences:</strong> ${matches.length}<br/>
             <strong>Position:</strong> x: ${boxData.x}px, y: ${boxData.y}px<br/>
             <strong>Dimensions:</strong> ${boxData.width}px × ${boxData.height}px
+            ${alignToggle.checked
+              ? `<br/><strong>Alignment:</strong> <span style="color:${boxData.misaligned ? '#e65100' : '#2e7d32'}">${boxData.misaligned ? 'Misaligned (off a column)' : 'OK'}</span>`
+              : ''}
           `;
         });
 
         overlay.appendChild(highlight);
         allBoxes.push(boxData);
       });
+
+      currentPage = pageNumber;
+      updateNav();
+
+      if (alignToggle.checked) applyAlignment();
+    }
+
+    // ---- Word & sentence grouping -----------------------------------------
+    // Turn PDF.js text items (which can be one-per-glyph for Arabic) into
+    // word boxes by merging neighbours that have no whitespace gap between
+    // them. Works for both LTR and RTL because gaps are measured against the
+    // union box, regardless of which side the next glyph sits on.
+    function buildWords(items, viewport, scale) {
+      // Fraction of the glyph height that counts as a real (space) gap.
+      const GAP_RATIO = 0.28;
+
+      const glyphs = [];
+      for (const item of items) {
+        const raw = item.str || '';
+        if (!raw.trim()) {
+          // Pure-whitespace item: marks a word boundary after the last glyph.
+          if (glyphs.length) glyphs[glyphs.length - 1].spaceAfter = true;
+          continue;
+        }
+        const t = pdfjsLib.Util.transform(viewport.transform, item.transform);
+        const b = t[1], d = t[3], e = t[4], f = t[5];
+        const height = Math.sqrt(b * b + d * d);
+        const width = item.width * scale;
+        const left = e;
+        const top = f - height;
+        glyphs.push({
+          text: raw,
+          left, top, width, height,
+          right: left + width,
+          bottom: top + height,
+          baseline: f,
+          font: item.fontName || 'Unknown',
+          spaceBefore: /^\s/.test(raw),
+          spaceAfter: /\s$/.test(raw)
+        });
+      }
+
+      const words = [];
+      let cur = null;
+      for (const g of glyphs) {
+        let startNew = false;
+        if (!cur) {
+          startNew = true;
+        } else {
+          const refH = Math.max(g.height, cur.maxHeight);
+          const sameLine = Math.abs(g.baseline - cur.baseline) <= 0.5 * refH;
+          const gap = Math.max(g.left - cur.right, cur.left - g.right, 0);
+          if (!sameLine || cur.endedBySpace || g.spaceBefore || gap > GAP_RATIO * refH) {
+            startNew = true;
+          }
+        }
+
+        if (startNew) {
+          cur = {
+            text: g.text,
+            left: g.left, right: g.right, top: g.top, bottom: g.bottom,
+            baseline: g.baseline, font: g.font, maxHeight: g.height
+          };
+          words.push(cur);
+        } else {
+          cur.text += g.text;
+          cur.left = Math.min(cur.left, g.left);
+          cur.right = Math.max(cur.right, g.right);
+          cur.top = Math.min(cur.top, g.top);
+          cur.bottom = Math.max(cur.bottom, g.bottom);
+          cur.maxHeight = Math.max(cur.maxHeight, g.height);
+        }
+        cur.endedBySpace = g.spaceAfter;
+      }
+
+      words.forEach(w => { w.text = w.text.trim(); });
+      return words.filter(w => w.text);
+    }
+
+    // Group words into sentences: a word whose text ends in '.' closes the
+    // current sentence; the next word starts a new one. Each word is tagged
+    // with the full sentence text it belongs to.
+    function assignSentences(words) {
+      let buffer = [];
+      const flush = () => {
+        const sentence = buffer.map(w => w.text).join(' ');
+        buffer.forEach(w => { w.sentence = sentence; });
+        buffer = [];
+      };
+      for (const w of words) {
+        buffer.push(w);
+        if (/\.\s*$/.test(w.text)) flush();
+      }
+      if (buffer.length) flush();
+    }
+    // -----------------------------------------------------------------------
+
+    // ---- Alignment guidelines ---------------------------------------------
+    // Group edge positions that fall within `tol` px of each other into a
+    // single "column". A column shared by 2+ text blocks is a real alignment
+    // edge, so we draw a guide line there.
+    function clusterEdges(values, tol) {
+      const sorted = [...values].sort((a, b) => a - b);
+      const clusters = [];
+      let cur = [];
+      for (const v of sorted) {
+        if (cur.length === 0 || v - cur[cur.length - 1] <= tol) {
+          cur.push(v);
+        } else {
+          clusters.push(cur);
+          cur = [v];
+        }
+      }
+      if (cur.length) clusters.push(cur);
+      return clusters.map(c => ({
+        x: c.reduce((s, n) => s + n, 0) / c.length,
+        count: c.length
+      }));
+    }
+
+    function nearestDist(value, clusters) {
+      let best = Infinity;
+      for (const c of clusters) best = Math.min(best, Math.abs(value - c.x));
+      return best;
+    }
+
+    function drawGuide(x, cls) {
+      const line = document.createElement('div');
+      line.className = `guide-line ${cls}`;
+      line.style.left = `${Math.round(x)}px`;
+      line.style.height = `${canvas.height}px`;
+      overlay.appendChild(line);
+    }
+
+    function clearAlignment() {
+      overlay.querySelectorAll('.guide-line').forEach(el => el.remove());
+      allBoxes.forEach(b =>
+        b.element.classList.remove('alg-aligned', 'alg-misaligned', 'alg-neutral'));
+      alignSummary.innerHTML = '';
+    }
+
+    function applyAlignment() {
+      clearAlignment();
+      if (!allBoxes.length) return;
+
+      const tol = Math.max(1, parseInt(alignTol.value, 10) || 3);
+      // A block counts as "misaligned" when its edge is close to a column
+      // (within this window) but doesn't actually sit on it.
+      const nearWindow = Math.max(tol * 5, 12);
+
+      const leftCols = clusterEdges(allBoxes.map(b => b.x), tol).filter(c => c.count >= 2);
+      const rightCols = clusterEdges(allBoxes.map(b => b.x + b.width), tol).filter(c => c.count >= 2);
+
+      leftCols.forEach(c => drawGuide(c.x, 'guide-left'));
+      rightCols.forEach(c => drawGuide(c.x, 'guide-right'));
+
+      let aligned = 0, misaligned = 0, neutral = 0;
+      allBoxes.forEach(b => {
+        // Left edge vs left columns, right edge vs right columns — whichever
+        // is closest decides the verdict (handles LTR and RTL/centered text).
+        const best = Math.min(
+          nearestDist(b.x, leftCols),
+          nearestDist(b.x + b.width, rightCols)
+        );
+        if (best <= tol) {
+          b.element.classList.add('alg-aligned');
+          aligned++;
+        } else if (best <= nearWindow) {
+          b.element.classList.add('alg-misaligned');
+          misaligned++;
+          b.misaligned = true;
+        } else {
+          b.element.classList.add('alg-neutral');
+          neutral++;
+        }
+      });
+
+      const sw = (color) =>
+        `<span class="legend-swatch" style="background:${color}"></span>`;
+      alignSummary.innerHTML = `
+        <strong>Alignment check</strong><br/>
+        Columns detected: ${leftCols.length} left, ${rightCols.length} right<br/>
+        ${sw('#2e7d32')}Aligned: ${aligned}<br/>
+        ${sw('#e65100')}Misaligned: ${misaligned}<br/>
+        ${sw('#9e9e9e')}Standalone: ${neutral}
+      `;
+    }
+
+    alignToggle.addEventListener('change', () => {
+      if (alignToggle.checked) applyAlignment();
+      else clearAlignment();
+    });
+
+    alignTol.addEventListener('change', () => {
+      if (alignToggle.checked) applyAlignment();
+    });
+    // -----------------------------------------------------------------------
+
+    function updateNav() {
+      const total = currentPdf ? currentPdf.numPages : 1;
+      pageIndicator.textContent = `Page ${currentPage} of ${total}`;
+      pageJump.value = currentPage;
+      prevBtn.disabled = currentPage <= 1;
+      nextBtn.disabled = currentPage >= total;
+    }
+
+    prevBtn.addEventListener('click', () => {
+      if (currentPage > 1) renderPage(currentPage - 1);
+    });
+
+    nextBtn.addEventListener('click', () => {
+      if (currentPdf && currentPage < currentPdf.numPages) renderPage(currentPage + 1);
+    });
+
+    pageJump.addEventListener('change', () => {
+      if (!currentPdf) return;
+      let target = parseInt(pageJump.value, 10);
+      if (isNaN(target)) target = currentPage;
+      target = Math.max(1, Math.min(currentPdf.numPages, target));
+      renderPage(target);
+    });
+
+    pageSizeSelect.addEventListener('change', () => {
+      if (currentPdf) renderPage(currentPage);
     });
 </script>
 </body>

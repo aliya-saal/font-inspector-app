@@ -8,6 +8,7 @@
     "dev": "electron . --debug",
     "build": "electron-builder",
     "build-win": "electron-builder --win",
+    "build-win-offline": "bash scripts/build-win-offline.sh",
     "build-mac": "electron-builder --mac",
     "build-linux": "electron-builder --linux",
     "dist": "electron-builder --publish=never"
@@ -35,15 +36,19 @@
       "main.js",
       "index.html",
       "icon.png",
+      "icon.icns",
       "icons.ico"
     ],
     "win": {
-      "target": "msi",
+      "target": {
+        "target": "nsis",
+        "arch": "x64"
+      },
       "icon": "icons.ico"
     },
     "mac": {
       "target": "dmg",
-      "icon": "icon.png",
+      "icon": "icon.icns",
       "category": "public.app-category.productivity"
     },
     "linux": {

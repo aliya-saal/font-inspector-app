@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu } = require('electron');
+const { app, BrowserWindow, Menu, nativeImage } = require('electron');
 const path = require('path');
 
 let mainWindow;
@@ -46,7 +46,7 @@ function createMenu() {
           click: () => {
             // Trigger file dialog through renderer
             mainWindow.webContents.executeJavaScript(`
-              document.getElementById('fileInput').click();
+              document.getElementById('pdf-upload').click();
             `);
           }
         },
@@ -107,6 +107,16 @@ function createMenu() {
 
 // App event handlers
 app.whenReady().then(() => {
+  // On macOS the BrowserWindow `icon` option is ignored, so set the Dock
+  // icon explicitly. This makes the app icon show in the Dock during
+  // development (`npm start`) and when running the app directly.
+  if (process.platform === 'darwin' && app.dock) {
+    const dockIcon = nativeImage.createFromPath(path.join(__dirname, 'icon.png'));
+    if (!dockIcon.isEmpty()) {
+      app.dock.setIcon(dockIcon);
+    }
+  }
+
   createWindow();
   createMenu();
 

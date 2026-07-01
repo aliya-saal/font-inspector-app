@@ -1,0 +1,58 @@
+name: Build Windows
+
+# Builds the Windows installer on a native Windows runner (full internet access,
+# no Wine needed). Runs on demand, and automatically on version tags.
+on:
+  workflow_dispatch: # lets you trigger it manually from the Actions tab
+  push:
+    tags:
+      - "v*" # e.g. push tag v1.0.0 to build + attach the installer to a Release
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Windows installer (NSIS x64)
+        run: npm run build-win
+        env:
+          # Avoid electron-builder trying to publish; we handle artifacts below.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: List build output
+        shell: bash
+        run: ls -lh dist/
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdf-font-inspector-windows
+          # NSIS installer + its blockmap, plus MSI if the target is ever added.
+          path: |
+            dist/*.exe
+            dist/*.msi
+            dist/*.blockmap
+          if-no-files-found: error
+
+      - name: Attach installer to GitHub Release (tag builds only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.exe
+            dist/*.msi
+            dist/*.blockmap
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
